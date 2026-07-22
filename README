@@ -1,40 +1,42 @@
-
 # Example Robot - PlatformIO Application
 
 ## Overview
-This is a PlatformIO project designed to run on the STM Nucleo microcontroller. The application controls an example robot with various features and functionalities.
+This is a **PlatformIO** project designed to run on the **STM Nucleo** microcontroller. The application controls an example robot with various features and functionalities.
 
 ## Getting Started
 
 ### Prerequisites
-- PlatformIO IDE or CLI installed
-- STM Nucleo microcontroller connected via USB
-- Required libraries installed (see Libraries section below)
+- `PlatformIO` IDE or CLI installed
+- `STM Nucleo` microcontroller connected via USB
+- Required libraries installed (see **Libraries** section below)
 
 ### How to Run
 
-1. **Select Your Program**
+1. Select your program
    - Locate the file you want to run in the `src/` directory
    - Rename it to `main.cpp` (or ensure it's set as the main entry point)
 
-2. **Compile the Project**
-   - Open PlatformIO
-   - Click on "Build" or run: `platformio run`
+2. Compile the project
+   - Open `PlatformIO`
+   - Click on **Build** or run: `platformio run`
 
-3. **Upload to STM Nucleo**
-   - Click on "Upload" or run: `platformio run --target upload`
-   - Ensure your STM Nucleo is connected via USB
+3. Upload to STM Nucleo
+   - Click on **Upload** or run: `platformio run --target upload`
+   - Ensure your `STM Nucleo` is connected via USB
 
-4. **Execute**
+4. Execute
    - The code will automatically start running on the microcontroller after upload
 
 ## Libraries & Updates
 This project includes the following libraries and custom updates:
-- STM Nucleo HAL drivers
+
+- `STM Nucleo` HAL drivers
 - Custom robot control library
 - Updated sensor drivers
 - Serial communication library for debugging
 - Motor control drivers
 
 For more information on PlatformIO:
+
 - https://docs.platformio.org/
+
