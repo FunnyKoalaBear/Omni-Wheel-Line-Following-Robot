@@ -1,0 +1,345 @@
+#include "mbed.h"
+#include "HCSR04.h"
+#include <cmath>
+#include <algorithm>
+#include <chrono> // ADD THIS LINE
+
+
+    
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);
+PwmOut pwm4(D9);
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+
+AnalogIn S0(A0); //right side 
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4); //left side, right and left mix up 
+AnalogIn S5(A5); //leftMost Side 
+AnalogIn S6(A6); //rightMost Side 
+
+
+
+//Distance Sensor 
+//VCC - 3V3, GND - GND, Echo - D5, Trig - D6 
+HCSR04 sensor(D5, D6);
+
+
+//const float threshold = 0.5f;
+float baseSpeed= 0.5f;
+float fastLeft = 0.8f;
+//float slow=0.1f;
+const float stop=0.0f;
+
+//to balance motor speed
+const float LEFT_MOTOR_SCALE = 0.95f; //0.89
+const float RIGHT_MOTOR_SCALE = 1.0f;
+const float FRONT_MOTOR_SCALE = 0.4f; //1 
+const float BACK_MOTOR_SCALE = 0.4f; //0.975
+
+
+void stopAll() {
+    // pwm1.write(0.5f); //rear motor control 
+    // pwm2.write(0.5f);
+    // pwm3.write(0.5f); //front motor control CW
+    // pwm4.write(0.5f);
+    // pwm5.write(0.5f); //right motor, CW, frontwards 
+    // pwm6.write(0.5f);
+    // pwm7.write(0.5f); //left motor, CW, frontwards 
+    // pwm8.write(0.5f); 
+
+    pwm1.write(0.0f); //rer motor control
+    pwm2.write(0.0f);
+    pwm3.write(0.0f); //front motor control CW
+    pwm4.write(0.0f);
+    pwm5.write(0.0f); //right motor, CW, frontwrds 
+    pwm6.write(0.0f);
+    pwm7.write(0.0f); //left motor, CW, frontwards 
+    pwm8.write(0.0f);
+}
+
+void drive(float vy, float strafe, float turn) {
+
+    //print values recieved 
+    printf("vy: %f, strafe: %f, tunr: %f\n", vy, strafe, turn);
+
+    // calculate motor spin 
+    float left_raw = vy + turn;
+    float right_raw = vy - turn;
+    float front_raw = strafe + turn;
+    float back_raw = strafe - turn;    
+ 
+
+    //apply motor scaling 
+    left_raw *= LEFT_MOTOR_SCALE;
+    right_raw *= RIGHT_MOTOR_SCALE;
+    front_raw *= FRONT_MOTOR_SCALE;
+    back_raw *= BACK_MOTOR_SCALE;
+    
+    //apply movement filters (clamp to [-1, 1])
+    float max_speed = max({fabs(left_raw), fabs(right_raw), fabs(front_raw), fabs(back_raw)});
+    
+    if (max_speed > 1.0f) {
+        left_raw /= max_speed; right_raw /= max_speed; front_raw /= max_speed; back_raw /= max_speed;
+    }
+    
+    //spin commands 
+    //front motors
+    printf("Front motor: %f\n", front_raw);
+    if (front_raw >= 0) {pwm3.write(front_raw); pwm4.write(0.0f);}
+    else {pwm3.write(0.0f); pwm4.write(fabs(front_raw));}
+    
+    //rear motors
+    printf("Rear motor: %f\n", back_raw);
+    if (back_raw >= 0) {pwm1.write(back_raw); pwm2.write(0.0f);}
+    else {pwm1.write(0.0f); pwm2.write(fabs(back_raw));}
+
+    //right motors
+    printf("Right motor: %f\n", right_raw); 
+    if (right_raw >= 0) {pwm5.write(right_raw); pwm6.write(0.0f);}
+    else {pwm5.write(0.0f); pwm6.write(fabs(right_raw));}
+
+    //let motors 
+    printf("Left motor: %f\n", left_raw);
+    if (left_raw >= 0) {pwm7.write(left_raw); pwm8.write(0.0f);}
+    else {pwm7.write(0.0f); pwm8.write(fabs(left_raw));}
+
+}
+
+int maneuverCnt = 0; 
+
+void maneuver(int number) {
+    if (number == 2) {
+        return;   
+    }
+    //going left 0.3s
+    // drive(0.1, 0.3);
+    // ThisThread::sleep_for(600ms);
+
+    // //going straight 0.2s
+    // drive(0.3, 0.3);
+    // ThisThread::sleep_for(200ms);
+
+    // //going right 0.3s 
+    // drive(0.3, 0.1); 
+    // ThisThread::sleep_for(600ms);
+    // drive(stop, stop); 
+
+}
+
+//variables for EOT check 
+using namespace std::chrono;
+Timer t;
+int state = false; 
+bool previously_on_line = false;
+
+//PID, error, integral, derivative
+
+float Proportional;
+float Integral; 
+float Derivative; 
+float current_error = 0; 
+float setpoint = 0; 
+float position; 
+float last_error = 0; 
+
+float weighted_sum = 0.0f;
+int active_sensors = 0;
+
+float Kp = 0.10f; //0.2 
+float Ki = 0.00f; 
+float Kd = 0.12f;
+float correction = 0.0f;
+
+bool empty; 
+bool currently_on_line;
+
+int main() {
+    pwm1.period(0.0005f);
+    pwm2.period(0.0005f);
+    pwm3.period(0.0005f);
+    pwm4.period(0.0005f);
+    pwm5.period(0.0005f);
+    pwm6.period(0.0005f);
+    pwm7.period(0.0005f);
+    pwm8.period(0.0005f);
+
+    // pwm1.period(0.02f);
+    // pwm2.period(0.02f);
+    // pwm3.period(0.02f);
+    // pwm4.period(0.02f);
+    // pwm5.period(0.02f);
+    // pwm6.period(0.02f);
+    // pwm7.period(0.02f);
+    // pwm8.period(0.02f);
+ 
+    Timer dist_timer;
+    dist_timer.start();
+    sensor.trigger(); // Initial trigger for the distance sensor
+    
+
+    while (true) {
+        float leftMost = S5.read()*100; 
+        float left = S0.read(); //right side -2
+        float leftmid = S1.read(); //-1
+        float middle = S2.read(); //0
+        float rightmid = S3.read(); //1
+        float right = S4.read(); //left side 2
+        float rightMost = S6.read();   
+        
+
+        weighted_sum = 0.0f;
+        active_sensors = 0; 
+
+        currently_on_line = (right > 0.6 && left > 0.6);
+
+        //end of track EOT check 
+        if (currently_on_line && !previously_on_line) {
+            if (state == false) {
+                //first perpendiculara line passed, start timer.
+                t.reset();
+                t.start();
+                state = true;
+                printf("Right aand left positive detected!\n");
+            }
+            else {
+                //second perpendicular line passed, compare timer. 
+                t.stop();
+                long long elapsed_time_ms = duration_cast<milliseconds>(t.elapsed_time()).count();
+                printf("State is true!\n");
+                printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+
+
+                if (elapsed_time_ms > 52 && elapsed_time_ms < 10000) {
+                    printf("Second signal, stopping car.\n");
+                    printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+                    stopAll(); 
+                    ThisThread::sleep_for(5s);
+                    state = false; 
+                    printf("Strating loop again!\n");
+
+                }
+                else if (elapsed_time_ms > 10000) {
+                    //took too long
+                    state = false; 
+                    printf("State set to false!\n"); 
+                }
+                else {
+                    state = false; 
+
+                }
+            } 
+        }
+
+        previously_on_line = currently_on_line;
+        
+
+        //obstacle check 
+        sensor.trigger(); //read distance 
+        if (duration_cast<milliseconds>(dist_timer.elapsed_time()).count() > 60) {
+            uint32_t distance = sensor.distance_cm();
+            
+            if (distance <= 20 && distance > 0) {
+                printf(" -> Obstacle Detected \r\n");
+                printf("Starting Maneuver\r\n");
+                maneuver(1); 
+                printf("Maneuver ended\r\n");
+            }
+            
+            sensor.trigger(); // Trigger for the NEXT reading
+            dist_timer.reset();
+        }        
+
+
+
+        
+        // //PID
+
+        if (right > 0.6)        {weighted_sum += -2.0f; active_sensors++;}
+        if (rightmid > 0.6)     {weighted_sum += -1.0f; active_sensors++;}
+        if (middle > 0.6)       {weighted_sum +=  0.0f; active_sensors++;}
+        if (leftmid > 0.6)      {weighted_sum +=  1.0f; active_sensors++;} 
+        if (left > 0.6)         {weighted_sum +=  2.0f; active_sensors++;} 
+        if (rightMost > 0.6)    {weighted_sum +=  -3.5f; active_sensors++;} 
+        if (leftMost > 0.6)     {weighted_sum +=  3.5f; active_sensors++;} 
+
+        // if (right > 0.6)        {weighted_sum += -1.5f; active_sensors++;}
+        // if (rightmid > 0.6)     {weighted_sum += -0.5f; active_sensors++;}
+        // if (middle > 0.6)       {weighted_sum +=  0.0f; active_sensors++;}
+        // if (leftmid > 0.6)      {weighted_sum +=  0.5f; active_sensors++;} 
+        // if (left > 0.6)         {weighted_sum +=  1.5f; active_sensors++;} 
+        // if (rightMost > 0.6)    {weighted_sum +=  -2.25f; active_sensors++;} 
+        // if (leftMost > 0.6)     {weighted_sum +=  2.25f; active_sensors++;}
+
+        
+
+        if (active_sensors > 0) {
+            position = weighted_sum/active_sensors;
+        }
+        else {
+            //lost line, for the blank line space 
+            if (fabs(last_error) <= 0.5) {
+                drive(baseSpeed, 0.0f, 0.0f);
+            }
+            else {
+                stopAll();
+                continue;
+            }
+        }
+
+        float current_speed = baseSpeed; 
+
+        // Reduce speed only for this specific cycle if the error is large
+        if (fabs(last_error) >= 1.0) {
+            current_speed = baseSpeed * 0.6f;
+        }
+
+        current_error = setpoint - position; 
+        Proportional = current_error;
+        Integral += current_error; 
+        Derivative = current_error - last_error;
+        last_error = current_error; 
+
+        correction = Kp*Proportional + Ki*Integral + Kd*Derivative; 
+
+        // if (fabs(current_error) > 1.0f) {
+        //     //STRAIGHT LINE
+        //     drive(baseSpeed, correction, 0.0f);
+        //     printf("Mode: Strafing\n");
+        //     printf("Current Error: %f\n", current_error);
+        // } 
+        // // If the error is moderate/small, we are on a straight or a sweeping U-turn.
+        // // TURN the chassis so the sensors stay aligned with the curve.
+        // else {
+        //     //CURVE
+        //     drive(baseSpeed, 0.0f, correction);
+        //     printf("Mode: Turning\n");
+        //     printf("Current Error: %f\n", current_error);
+
+        // }
+        printf("Error = %.2f  Correction = %.2f\n", current_error, correction);
+
+        // if (correction > 1.1) {
+        //     stopAll();
+        //     thread_sleep_for(1000); 
+        // }
+
+        drive(current_speed, 0.0f, correction); 
+        //drive(baseSpeed, 0.0f, correction); 
+        printf("Base speed: %f, correction: %f", current_speed, correction);
+
+        //printf("S0, Right: %.5f S1, Rightmid: %.5f S2, Middle: %.5f S3, Leftmid: %.5f S4, Left: %.5f \r\n",
+        //S0.read(), S1.read(), S2.read(), S3.read(), S4.read());
+        thread_sleep_for(25); //CHANGE THIS BACK TO 10
+        printf("\n");
+    }
+    thread_sleep_for(100);
+    printf("\n");
+}

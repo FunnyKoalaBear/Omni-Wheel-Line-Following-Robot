@@ -1,0 +1,219 @@
+#include "mbed.h"
+#include "HCSR04.h"
+
+
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);
+PwmOut pwm4(D9);
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+const float LEFT_MOTOR_SCALE = 0.89f;
+const float RIGHT_MOTOR_SCALE = 1.0f;
+const float FRONT_MOTOR_SCALE = 1.0f;
+const float BACK_MOTOR_SCALE = 0.975f;
+
+float motor1; 
+float motor2; 
+float motor3;
+float motor4; 
+
+
+void stopAll() {
+        pwm1.write(0.5f); //rear motor control 
+        pwm2.write(0.5f);
+        pwm3.write(0.5f); //front motor control CW
+        pwm4.write(0.5f);
+        pwm5.write(0.5f); //right motor, CW, frontwards 
+        pwm6.write(0.5f);
+        pwm7.write(0.5f); //left motor, CW, frontwards 
+        pwm8.write(0.5f); 
+}
+
+void drive(float vy, float strafe, float turn) {
+
+    // calculate motor spin 
+    float left_raw = vy + turn;
+    float right_raw = vy - turn;
+    float front_raw = strafe + turn;
+    float back_raw = strafe - turn;    
+ 
+
+    //apply motor scaling 
+    left_raw *= LEFT_MOTOR_SCALE;
+    right_raw *= RIGHT_MOTOR_SCALE;
+    front_raw *= FRONT_MOTOR_SCALE;
+    back_raw *= BACK_MOTOR_SCALE;
+    
+    //apply movement filters (clamp to [-1, 1])
+    float max_speed = max({fabs(left_raw), fabs(right_raw), fabs(front_raw), fabs(back_raw)});
+    
+    if (max_speed > 1.0f) {
+        left_raw /= max_speed; right_raw /= max_speed; front_raw /= max_speed; back_raw /= max_speed;
+    }
+    
+    //spin commands 
+    //front motors
+    if (front_raw >= 0) {pwm3.write(front_raw); pwm4.write(0.0f);}
+    else {pwm3.write(0.0f); pwm4.write(fabs(front_raw));}
+    
+    //rear motors
+    if (back_raw >= 0) {pwm1.write(back_raw); pwm2.write(0.0f);}
+    else {pwm1.write(0.0f); pwm2.write(fabs(back_raw));}
+
+    //right motors 
+    if (right_raw >= 0) {pwm5.write(right_raw); pwm6.write(0.0f);}
+    else {pwm5.write(0.0f); pwm6.write(fabs(right_raw));}
+
+    //let motors 
+    if (left_raw >= 0) {pwm7.write(left_raw); pwm8.write(0.0f);}
+    else {pwm7.write(0.0f); pwm8.write(fabs(left_raw));}
+
+}
+
+//motor mappings 
+// motor 1 - pwm 1 & pwm 2 - rear motor, 1 on CW
+// motor 2 - pwm 3 & pwm 4 - front motor, 3 on CW 
+// motor 3 - pwm 5 & pwm 6 - right motor, 5 on forward 
+// motor 4 - pwm 7 & pwm 8 - left motor, 7 on forwards 
+
+
+void strafe(float vy, float vx) {    
+
+    //left/right motors spin forward
+    if (vy > 0) {
+        pwm1.write(vy);
+        pwm3.write(vy);
+    }
+
+    //left/right motors spin ccw
+    pwm2.write(vy);
+    pwm3.write(vy);
+
+    //need to check if forward/backward motors spin cw/ccw
+    if (vx > 0){
+        //cw spin 
+        pwm5.write(vx);
+        pwm7.write(vx);
+    }
+    
+    //spin motors ccw
+    pwm6.write(vx);
+    pwm7.write(vx);
+}
+
+
+
+int main(){
+
+    printf("gg\n");
+
+    // while(true){
+        
+        // pwm1.write(0.5f); //rear motor control 
+        // pwm2.write(0.0f);
+
+        // pwm3.write(0.5f); //front motor control CW
+        // pwm4.write(0.0f);
+
+        // pwm5.write(0.5f); //right motor, CW, frontwards 
+        // pwm6.write(0.0f);
+
+        // pwm7.write(0.5f); //left motor, CW, frontwards 
+        // pwm8.write(0.0f); 
+
+        // pwm7.write(0.0f);  
+        // pwm8.write(0.5f); //left motor, CCW, backwards 
+
+    //     ThisThread::sleep_for(1s);
+    // }
+
+    //making it go straight 
+    //strafe(0.5, 0);
+
+    while (1) {
+        // drive(0.2, 0.0, 0.0); 
+        // printf("Going Straight \n");
+        // ThisThread::sleep_for(5s);
+
+        // drive(-0.2, 0.0, 0.0); 
+        // printf("Going Back\n");
+        // ThisThread::sleep_for(2s);
+        
+
+        drive(0.0, 0.2, 0.0); 
+        printf("Going right\n");
+        ThisThread::sleep_for(5s);
+        
+        
+        // drive(0.0, -0.2, 0.0); 
+        // printf("Going left\n");
+        // ThisThread::sleep_for(2s);
+        
+        // //strafe -45 degrees 
+        // //strafe(0.5, 0.3);
+        // drive(0.2, -0.2, 0.0); 
+        // printf("Strafe left\n");
+        // ThisThread::sleep_for(2s);
+
+        
+        // //strafe 45 degrees 
+        // // strafe(0.5, -0.3);
+        // drive(0.2, 0.2, 0.0); 
+        // printf("Strafe right\n");
+        // ThisThread::sleep_for(2s);
+
+
+        // //strafe back -45 degrees 
+        // drive(-0.2, -0.2, 0.0); 
+        // printf("Strafe back left\n");
+        // ThisThread::sleep_for(2s);
+
+
+        // //strafe back 45 degrees 
+        // drive(-0.2, 0.2, 0.0); 
+        // printf("Strafe back right\n");
+        // ThisThread::sleep_for(2s);
+
+
+        // //stop
+        // stopAll(); 
+        // printf("Stopping Motors");
+        // ThisThread::sleep_for(2s);    
+
+
+        // //curve forwards right 
+        // drive(0.2, 0.0, 0.1); 
+        // printf("Curve forwards right\n");
+        // ThisThread::sleep_for(2s);    
+
+
+        // //curve forwards left 
+        // drive(0.2, 0.0, -0.1); 
+        // printf("Curve forwards left\n");
+        // ThisThread::sleep_for(2s);   
+
+
+        // //curve backwards right 
+        // drive(-0.2, 0.0, 0.1); 
+        // printf("Curve backwards right\n");
+        // ThisThread::sleep_for(2s);    
+
+
+        // //curve backwards left 
+        // drive(-0.2, 0.0, -0.1); 
+        // printf("Curve backwards left\n");
+        // ThisThread::sleep_for(2s);   
+        
+        //stop
+        stopAll(); 
+        printf("Stopping Motors");
+        ThisThread::sleep_for(2s);   
+    }
+}
+ 
+

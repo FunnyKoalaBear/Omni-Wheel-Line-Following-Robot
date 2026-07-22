@@ -1,0 +1,238 @@
+#include "mbed.h"
+#include "HCSR04.h"
+#include <cmath>
+#include <algorithm>
+
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);
+PwmOut pwm4(D9);
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+
+AnalogIn S0(A0); //left side 
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4); //right side 
+
+//Distance Sensor 
+//VCC - 3V3, GND - GND, Echo - D5, Trig - D6 
+HCSR04 sensor(D5, D6);
+
+
+//const float threshold = 0.5f;
+float baseSpeed= 0.4f;
+float fastLeft = 0.8f;
+//float slow=0.1f;
+const float stop=0.0f;
+
+//to balance motor speed
+const float LEFT_MOTOR_SCALE = 0.89f;
+const float RIGHT_MOTOR_SCALE = 1.0f;
+const float FRONT_MOTOR_SCALE = 1.0f;
+const float BACK_MOTOR_SCALE = 0.975f;
+
+
+void stopAll() {
+    // pwm1.write(0.5f); //rear motor control 
+    // pwm2.write(0.5f);
+    // pwm3.write(0.5f); //front motor control CW
+    // pwm4.write(0.5f);
+    // pwm5.write(0.5f); //right motor, CW, frontwards 
+    // pwm6.write(0.5f);
+    // pwm7.write(0.5f); //left motor, CW, frontwards 
+    // pwm8.write(0.5f); 
+
+    pwm1.write(0.0f); //rer motor control
+    pwm2.write(0.0f);
+    pwm3.write(0.0f); //front motor control CW
+    pwm4.write(0.0f);
+    pwm5.write(0.0f); //right motor, CW, frontwrds 
+    pwm6.write(0.0f);
+    pwm7.write(0.0f); //left motor, CW, frontwards 
+    pwm8.write(0.0f);
+}
+
+void drive(float vy, float strafe, float turn) {
+
+    //print values recieved 
+    printf("vy: %f, strafe: %f, tunr: %f\n", vy, strafe, turn);
+
+    // calculate motor spin 
+    float left_raw = vy + turn;
+    float right_raw = vy - turn;
+    float front_raw = strafe + turn;
+    float back_raw = strafe - turn;    
+ 
+
+    //apply motor scaling 
+    left_raw *= LEFT_MOTOR_SCALE;
+    right_raw *= RIGHT_MOTOR_SCALE;
+    front_raw *= FRONT_MOTOR_SCALE;
+    back_raw *= BACK_MOTOR_SCALE;
+    
+    //apply movement filters (clamp to [-1, 1])
+    float max_speed = max({fabs(left_raw), fabs(right_raw), fabs(front_raw), fabs(back_raw)});
+    
+    if (max_speed > 1.0f) {
+        left_raw /= max_speed; right_raw /= max_speed; front_raw /= max_speed; back_raw /= max_speed;
+    }
+    
+    //spin commands 
+    //front motors
+    printf("Front motor: %f\n", front_raw);
+    if (front_raw >= 0) {pwm3.write(front_raw); pwm4.write(0.0f);}
+    else {pwm3.write(0.0f); pwm4.write(fabs(front_raw));}
+    
+    //rear motors
+    printf("Rear motor: %f\n", back_raw);
+    if (back_raw >= 0) {pwm1.write(back_raw); pwm2.write(0.0f);}
+    else {pwm1.write(0.0f); pwm2.write(fabs(back_raw));}
+
+    //right motors
+    printf("Right motor: %f\n", right_raw); 
+    if (right_raw >= 0) {pwm5.write(right_raw); pwm6.write(0.0f);}
+    else {pwm5.write(0.0f); pwm6.write(fabs(right_raw));}
+
+    //let motors 
+    printf("Left motor: %f\n", left_raw);
+    if (left_raw >= 0) {pwm7.write(left_raw); pwm8.write(0.0f);}
+    else {pwm7.write(0.0f); pwm8.write(fabs(left_raw));}
+
+}
+
+int maneuverCnt = 1; 
+
+int maneuver(int number) {
+
+    //straight one
+    if (number == 1) {
+        printf("Going through obstacle 1\n");
+
+        //going left 0.3s
+        drive(0.0f, -1*baseSpeed, 0.0f);
+        ThisThread::sleep_for(300ms);
+        ThisThread::sleep_for(100ms);
+
+        //going straight 0.2s
+        drive(baseSpeed, 0.0f, 0.0f);
+        ThisThread::sleep_for(750ms);
+        ThisThread::sleep_for(100ms);
+
+
+        //going right 0.3s 
+        drive(0.0f, baseSpeed, 0.0f);
+        ThisThread::sleep_for(400ms);
+        ThisThread::sleep_for(100ms);
+
+        stopAll(); 
+        
+        return 1; 
+    }
+
+    else if (number == 2) {
+        printf("Going through obstacle 2\n");
+        //CODE THIS 
+        //MAKE THE RETURN STRAFE HAPPEN UNTIL IT REACHES THE WHITE LINE AGAIN 
+        return 1;   
+    }
+
+    else if (number == 3) {
+        printf("Going through obstacle 3");
+        printf("Going through obstacle 1\n");
+
+        //going left 0.3s
+        drive(0.0f, baseSpeed, 0.0f);
+        ThisThread::sleep_for(300ms);
+        ThisThread::sleep_for(100ms);
+
+        //going straight 0.2s
+        drive(baseSpeed, 0.0f, 0.0f);
+        ThisThread::sleep_for(750ms);
+        ThisThread::sleep_for(100ms);
+
+
+        //going right 0.3s 
+        drive(0.0f, -1*baseSpeed, 0.0f);
+        ThisThread::sleep_for(400ms);
+        ThisThread::sleep_for(100ms);
+
+        stopAll(); 
+        
+        return 1; 
+    }
+
+    return -1; 
+}
+
+int main() {
+    pwm1.period(0.0005f);
+    pwm2.period(0.0005f);
+    pwm3.period(0.0005f);
+    pwm4.period(0.0005f);
+    pwm5.period(0.0005f);
+    pwm6.period(0.0005f);
+    pwm7.period(0.0005f);
+    pwm8.period(0.0005f);
+
+    // pwm1.period(0.02f);
+    // pwm2.period(0.02f);
+    // pwm3.period(0.02f);
+    // pwm4.period(0.02f);
+    // pwm5.period(0.02f);
+    // pwm6.period(0.02f);
+    // pwm7.period(0.02f);
+    // pwm8.period(0.02f);
+ 
+    while (true) {
+
+
+        //obstacle check 
+        sensor.trigger(); //read distance 
+        ThisThread::sleep_for(60ms);
+        uint32_t distance = sensor.distance_cm();
+
+        printf("Distance: %lu cm \n", distance);
+
+        if (distance <= 20 && distance > 0) {
+            printf(" -> Obstacle Detected \r\n");
+
+            //start maneuver
+            printf("Starting Maneuver\r\n");
+            maneuver(maneuverCnt); 
+
+            printf("Maneuver ended\r\n");
+
+            //check if still on line, if not search 
+        }
+
+        drive(baseSpeed, 0.0f, 0.0f);
+
+        // for (int i = 1; i < 2; i++) {
+        //     drive(baseSpeed, 0.0f, 0.0f);
+        //     thread_sleep_for(1000);
+            
+        //     printf("Calling maneuver(%d)\n", maneuverCnt + i);
+        //     maneuver(maneuverCnt+i);
+        //     //drive(baseSpeed, 0.0f, correction); 
+        //     printf("Obstacle passed %i\n", maneuverCnt+i);
+
+        //     //printf("S0, Right: %.5f S1, Rightmid: %.5f S2, Middle: %.5f S3, Leftmid: %.5f S4, Left: %.5f \r\n",
+        //     //S0.read(), S1.read(), S2.read(), S3.read(), S4.read());
+        //     stopAll(); 
+        //     thread_sleep_for(1000); //CHANGE THIS BACK TO 10
+        // }
+
+        if (maneuverCnt > 3) {
+            maneuverCnt = 1; 
+        }
+        printf("\n");
+    }
+    thread_sleep_for(10);
+    printf("\n");
+}

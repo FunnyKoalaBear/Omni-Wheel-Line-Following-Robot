@@ -1,0 +1,61 @@
+#include "mbed.h"
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+//to balance motor speed
+const float LEFT_MOTOR_SCALE = 0.97f;
+const float RIGHT_MOTOR_SCALE = 1.0f;
+
+void stopAll() {
+    pwm5.write(0.0f);
+    pwm6.write(0.0f);
+    pwm7.write(0.0f);
+    pwm8.write(0.0f);
+}
+
+void drive(float left, float right) {
+    left = left * LEFT_MOTOR_SCALE;
+    right = right * RIGHT_MOTOR_SCALE;
+
+    if (left > 1.0f) left = 1.0f;
+    if (left < -1.0f) left = -1.0f; 
+    if (right > 1.0f) right = 1.0f;
+    if (right < -1.0f) right = -1.0f;
+
+    // Left Motor (Allows Reversing)
+    if (left >= 0.0f) {
+        pwm7.write(left); 
+        pwm8.write(0.0f); 
+    } else {
+        pwm7.write(0.0f); 
+        pwm8.write(fabs(left));
+    }
+
+    // Right Motor (Allows Reversing)
+    if (right >= 0.0f) {
+        pwm5.write(right);
+        pwm6.write(0.0f);
+    } else {
+        pwm5.write(0.0f);
+        pwm6.write(fabs(right));
+    }
+}
+
+int main() {
+    pwm5.period(0.005f);
+    pwm7.period(0.005f);    
+    pwm6.period(0.005f);
+    pwm8.period(0.005f);    
+
+    // Reverse both wheels
+    drive(-0.5, -0.5);
+    
+    while (true) {
+        ThisThread::sleep_for(100ms);
+    }
+}
+
+

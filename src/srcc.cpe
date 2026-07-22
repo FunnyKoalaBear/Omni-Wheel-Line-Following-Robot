@@ -1,0 +1,776 @@
+#include "mbed.h"
+#include "HCSR04.h"
+#include <cmath>
+#include <algorithm>
+#include <chrono>
+
+using namespace std::chrono;
+
+
+// ============================================================
+// MOTOR PINS
+// ============================================================
+
+// Right motor
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+
+// Left motor
+#if defined(PA_12_ALT0)
+PwmOut pwm7(PA_12_ALT0);
+#else
+PwmOut pwm7(PA_12);
+#endif
+
+#if defined(PB_0_ALT0)
+PwmOut pwm8(PB_0_ALT0);
+#else
+PwmOut pwm8(PB_0);
+#endif
+
+
+// ============================================================
+// IR SENSOR PINS
+// ============================================================
+
+AnalogIn S0(A0);
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4);
+AnalogIn S5(A5);
+AnalogIn S6(A6);
+
+
+// ============================================================
+// DISTANCE SENSOR
+// VCC = 3V3
+// GND = GND
+// Echo = D5
+// Trigger = D6
+// ============================================================
+
+HCSR04 sensor(D5, D6);
+
+
+// ============================================================
+// SPEED SETTINGS
+// ============================================================
+
+float minSpeed  = 0.01f;
+float baseSpeed = 0.40f;
+float maxSpeed  = 0.50f;
+
+const float stop = 0.0f;
+
+const float LEFT_MOTOR_SCALE  = 0.95f;
+const float RIGHT_MOTOR_SCALE = 1.00f;
+
+const float LINE_THRESHOLD = 0.60f;
+
+
+// ============================================================
+// PID VARIABLES
+// ============================================================
+
+float Proportional = 0.0f;
+float Integral     = 0.0f;
+float Derivative   = 0.0f;
+
+float current_error = 0.0f;
+float last_error    = 0.0f;
+float setpoint      = 0.0f;
+float position      = 0.0f;
+
+float weighted_sum = 0.0f;
+int active_sensors = 0;
+
+float Kp = 0.07f;
+float Ki = 0.00f;
+float Kd = 0.24f;
+
+float correction = 0.0f;
+
+
+// ============================================================
+// END-OF-TRACK VARIABLES
+// ============================================================
+
+Timer t;
+bool state = false;
+bool previously_on_line = false;
+
+
+// ============================================================
+// MOTOR FUNCTIONS
+// ============================================================
+
+float clampMotor(float value)
+{
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+
+    if (value < -1.0f) {
+        return -1.0f;
+    }
+
+    return value;
+}
+
+
+void stopAll()
+{
+    pwm5.write(0.0f);
+    pwm6.write(0.0f);
+    pwm7.write(0.0f);
+    pwm8.write(0.0f);
+}
+
+
+void drive(float left, float right)
+{
+    left  *= LEFT_MOTOR_SCALE;
+    right *= RIGHT_MOTOR_SCALE;
+
+    /*
+     * Keep negative values because negative means reverse.
+     * Your previous code changed all negative values to zero.
+     */
+    left  = clampMotor(left);
+    right = clampMotor(right);
+
+    // Left motor
+    if (left >= 0.0f) {
+        pwm7.write(left);
+        pwm8.write(0.0f);
+    } else {
+        pwm7.write(0.0f);
+        pwm8.write(fabs(left));
+    }
+
+    // Right motor
+    if (right >= 0.0f) {
+        pwm5.write(right);
+        pwm6.write(0.0f);
+    } else {
+        pwm5.write(0.0f);
+        pwm6.write(fabs(right));
+    }
+}
+
+
+void driveFor(float left, float right, int durationMs)
+{
+    drive(left, right);
+    ThisThread::sleep_for(milliseconds(durationMs));
+    stopAll();
+}
+
+
+// ============================================================
+// IR SENSOR FUNCTIONS
+// ============================================================
+
+bool anyLineDetected()
+{
+    return (
+        S0.read() > LINE_THRESHOLD ||
+        S1.read() > LINE_THRESHOLD ||
+        S2.read() > LINE_THRESHOLD ||
+        S3.read() > LINE_THRESHOLD ||
+        S4.read() > LINE_THRESHOLD ||
+        S5.read() > LINE_THRESHOLD ||
+        S6.read() > LINE_THRESHOLD
+    );
+}
+
+
+bool centreLineDetected()
+{
+    return S2.read() > LINE_THRESHOLD;
+}
+
+
+// ============================================================
+// 45-DEGREE OBSTACLE MANEUVER
+// ============================================================
+
+bool maneuver(float obstacleDistanceCm)
+{
+    /*
+     * CALIBRATE THESE VALUES ON THE ACTUAL ROBOT.
+     */
+
+    const float TURN_SPEED   = 0.23f;
+    const float MOVE_SPEED   = 0.25f;
+    const float SEARCH_SPEED = 0.15f;
+
+    /*
+     * Start with approximately half the time required
+     * for a 90-degree pivot.
+     */
+    const int TURN_45_MS = 220;
+
+    /*
+     * Controls how far the robot moves away from the line.
+     */
+    const int DIAGONAL_OUT_MS = 650;
+
+    /*
+     * Controls how far the robot travels beside the obstacle.
+     * Increase this if the robot returns too early.
+     */
+    const int PASS_OBSTACLE_MS = 900;
+
+    const int LINE_SEARCH_TIMEOUT_MS = 3500;
+    const int CENTRE_SEARCH_TIMEOUT_MS = 500;
+
+    printf("\nObstacle maneuver started\n");
+    printf(
+        "Obstacle distance: %.1f cm\n",
+        obstacleDistanceCm
+    );
+
+    stopAll();
+    ThisThread::sleep_for(milliseconds(100));
+
+
+    // --------------------------------------------------------
+    // Safety: move backward slightly if obstacle is too close
+    // --------------------------------------------------------
+
+    if (obstacleDistanceCm < 8.0f) {
+
+        float difference = 8.0f - obstacleDistanceCm;
+
+        int reverseTimeMs =
+            100 + static_cast<int>(difference * 35.0f);
+
+        if (reverseTimeMs > 350) {
+            reverseTimeMs = 350;
+        }
+
+        printf("Obstacle is close, reversing first\n");
+
+        driveFor(
+            -0.15f,
+            -0.15f,
+            reverseTimeMs
+        );
+
+        ThisThread::sleep_for(milliseconds(80));
+    }
+
+
+    // --------------------------------------------------------
+    // Step 1: Turn left approximately 45 degrees
+    // --------------------------------------------------------
+
+    printf("Step 1: turning left 45 degrees\n");
+
+    driveFor(
+        -TURN_SPEED,
+         TURN_SPEED,
+         TURN_45_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(70));
+
+
+    // --------------------------------------------------------
+    // Step 2: Move diagonally away from the line
+    // --------------------------------------------------------
+
+    printf("Step 2: moving diagonally away\n");
+
+    driveFor(
+        MOVE_SPEED,
+        MOVE_SPEED,
+        DIAGONAL_OUT_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(70));
+
+
+    // --------------------------------------------------------
+    // Step 3: Turn right approximately 45 degrees
+    // Robot becomes parallel to original line
+    // --------------------------------------------------------
+
+    printf("Step 3: turning right 45 degrees\n");
+
+    driveFor(
+         TURN_SPEED,
+        -TURN_SPEED,
+         TURN_45_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(70));
+
+
+    // --------------------------------------------------------
+    // Step 4: Drive parallel until obstacle has been passed
+    // --------------------------------------------------------
+
+    printf("Step 4: passing obstacle\n");
+
+    driveFor(
+        MOVE_SPEED,
+        MOVE_SPEED,
+        PASS_OBSTACLE_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(70));
+
+
+    // --------------------------------------------------------
+    // Step 5: Turn right 45 degrees toward original line
+    // --------------------------------------------------------
+
+    printf("Step 5: turning toward line\n");
+
+    driveFor(
+         TURN_SPEED,
+        -TURN_SPEED,
+         TURN_45_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(70));
+
+
+    // --------------------------------------------------------
+    // Step 6: Move diagonally until a sensor detects line
+    // --------------------------------------------------------
+
+    printf("Step 6: searching for line\n");
+
+    Timer lineSearchTimer;
+    lineSearchTimer.start();
+
+    bool lineFound = false;
+
+    while (true) {
+
+        if (anyLineDetected()) {
+            lineFound = true;
+            break;
+        }
+
+        drive(
+            SEARCH_SPEED,
+            SEARCH_SPEED
+        );
+
+        long long elapsedMs =
+            duration_cast<milliseconds>(
+                lineSearchTimer.elapsed_time()
+            ).count();
+
+        if (elapsedMs >= LINE_SEARCH_TIMEOUT_MS) {
+            break;
+        }
+
+        ThisThread::sleep_for(milliseconds(5));
+    }
+
+    stopAll();
+
+    if (!lineFound) {
+        printf("ERROR: line was not found\n");
+        return false;
+    }
+
+    printf("Line detected by IR sensors\n");
+
+
+    // --------------------------------------------------------
+    // Step 7: Continue until centre sensor reaches line
+    // --------------------------------------------------------
+
+    Timer centreTimer;
+    centreTimer.start();
+
+    while (!centreLineDetected()) {
+
+        drive(
+            0.10f,
+            0.10f
+        );
+
+        long long elapsedMs =
+            duration_cast<milliseconds>(
+                centreTimer.elapsed_time()
+            ).count();
+
+        if (elapsedMs >= CENTRE_SEARCH_TIMEOUT_MS) {
+            break;
+        }
+
+        ThisThread::sleep_for(milliseconds(5));
+    }
+
+    stopAll();
+    ThisThread::sleep_for(milliseconds(80));
+
+
+    // --------------------------------------------------------
+    // Step 8: Turn left 45 degrees to align with line
+    // --------------------------------------------------------
+
+    printf("Step 8: aligning with line\n");
+
+    driveFor(
+        -TURN_SPEED,
+         TURN_SPEED,
+         TURN_45_MS
+    );
+
+    ThisThread::sleep_for(milliseconds(80));
+
+
+    // Small forward movement after final turn
+    driveFor(
+        0.12f,
+        0.12f,
+        80
+    );
+
+
+    // Reset PID before returning to normal line following
+    Integral      = 0.0f;
+    last_error    = 0.0f;
+    current_error = 0.0f;
+    correction    = 0.0f;
+
+    printf("Obstacle maneuver completed\n\n");
+
+    return true;
+}
+
+
+// ============================================================
+// MAIN
+// ============================================================
+
+int main()
+{
+    /*
+     * Configure the PWM frequency for all four motor pins.
+     */
+    pwm5.period(0.0005f);
+    pwm6.period(0.0005f);
+    pwm7.period(0.0005f);
+    pwm8.period(0.0005f);
+
+    Timer dist_timer;
+    dist_timer.start();
+
+    Timer debug_timer;
+    debug_timer.start();
+
+    sensor.trigger();
+
+    while (true) {
+
+        // ----------------------------------------------------
+        // Read all IR sensors
+        // ----------------------------------------------------
+
+        /*
+         * S5 must not be multiplied by 100.
+         */
+        float leftMost = S5.read();
+
+        float left     = S0.read();
+        float leftmid  = S1.read();
+        float middle   = S2.read();
+        float rightmid = S3.read();
+        float right    = S4.read();
+
+        float rightMost = S6.read();
+
+
+        // ----------------------------------------------------
+        // End-of-track detection
+        // ----------------------------------------------------
+
+        bool currently_on_line =
+            right > LINE_THRESHOLD &&
+            left > LINE_THRESHOLD;
+
+        weighted_sum = 0.0f;
+        active_sensors = 0;
+
+        if (currently_on_line && !previously_on_line) {
+
+            if (!state) {
+
+                t.reset();
+                t.start();
+                state = true;
+
+                printf("First perpendicular line detected\n");
+
+            } else {
+
+                t.stop();
+
+                long long elapsed_time_ms =
+                    duration_cast<milliseconds>(
+                        t.elapsed_time()
+                    ).count();
+
+                if (
+                    elapsed_time_ms > 52 &&
+                    elapsed_time_ms < 10000
+                ) {
+
+                    printf("Second perpendicular line detected\n");
+                    printf("Stopping robot\n");
+
+                    stopAll();
+                    ThisThread::sleep_for(seconds(5));
+
+                    state = false;
+
+                } else {
+
+                    state = false;
+                }
+            }
+        }
+
+        previously_on_line = currently_on_line;
+
+
+        // ----------------------------------------------------
+        // Ultrasonic obstacle check
+        // ----------------------------------------------------
+
+        if (
+            duration_cast<milliseconds>(
+                dist_timer.elapsed_time()
+            ).count() >= 60
+        ) {
+
+            uint32_t distance = sensor.distance_cm();
+
+            sensor.trigger();
+            dist_timer.reset();
+
+            if (distance > 0 && distance <= 20) {
+
+                printf(
+                    "Obstacle detected at %lu cm\n",
+                    static_cast<unsigned long>(distance)
+                );
+
+                bool success =
+                    maneuver(static_cast<float>(distance));
+
+                if (!success) {
+
+                    stopAll();
+
+                    printf(
+                        "Robot stopped because line recovery failed\n"
+                    );
+
+                    while (true) {
+                        ThisThread::sleep_for(milliseconds(100));
+                    }
+                }
+
+                /*
+                 * Start a fresh ultrasonic measurement and skip
+                 * normal PID during this loop iteration.
+                 */
+                sensor.trigger();
+                dist_timer.reset();
+
+                continue;
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Calculate weighted line position
+        // ----------------------------------------------------
+
+        if (right > LINE_THRESHOLD) {
+            weighted_sum += -2.0f;
+            active_sensors++;
+        }
+
+        if (rightmid > LINE_THRESHOLD) {
+            weighted_sum += -1.0f;
+            active_sensors++;
+        }
+
+        if (middle > LINE_THRESHOLD) {
+            weighted_sum += 0.0f;
+            active_sensors++;
+        }
+
+        if (leftmid > LINE_THRESHOLD) {
+            weighted_sum += 1.0f;
+            active_sensors++;
+        }
+
+        if (left > LINE_THRESHOLD) {
+            weighted_sum += 2.0f;
+            active_sensors++;
+        }
+
+        if (rightMost > LINE_THRESHOLD) {
+            weighted_sum += -3.0f;
+            active_sensors++;
+        }
+
+        if (leftMost > LINE_THRESHOLD) {
+            weighted_sum += 3.0f;
+            active_sensors++;
+        }
+
+
+        // ----------------------------------------------------
+        // Lost-line handling
+        // ----------------------------------------------------
+
+        if (active_sensors > 0) {
+
+            position =
+                weighted_sum /
+                static_cast<float>(active_sensors);
+
+        } else {
+
+            if (fabs(last_error) <= 0.5f) {
+
+                /*
+                 * Likely a small intentional line gap.
+                 */
+                drive(
+                    baseSpeed,
+                    baseSpeed
+                );
+
+            } else if (last_error > 0.5f) {
+
+                /*
+                 * Line was last seen on the left side.
+                 */
+                drive(
+                    -0.15f,
+                     0.15f
+                );
+
+            } else {
+
+                /*
+                 * Line was last seen on the right side.
+                 */
+                drive(
+                     0.15f,
+                    -0.15f
+                );
+            }
+
+            /*
+             * Do not allow PID below to overwrite
+             * the lost-line search command.
+             */
+            ThisThread::sleep_for(milliseconds(5));
+            continue;
+        }
+
+
+        // ----------------------------------------------------
+        // PID calculation
+        // ----------------------------------------------------
+
+        current_error = setpoint - position;
+
+        Proportional = current_error;
+
+        Integral += current_error;
+
+        /*
+         * Prevent integral windup in case Ki is enabled later.
+         */
+        if (Integral > 50.0f) {
+            Integral = 50.0f;
+        }
+
+        if (Integral < -50.0f) {
+            Integral = -50.0f;
+        }
+
+        Derivative = current_error - last_error;
+
+        last_error = current_error;
+
+        correction =
+            Kp * Proportional +
+            Ki * Integral +
+            Kd * Derivative;
+
+
+        // ----------------------------------------------------
+        // Reduce speed when the line error is large
+        // ----------------------------------------------------
+
+        float speed_penalty =
+            fabs(current_error) * 0.06f;
+
+        float current_speed =
+            baseSpeed - speed_penalty;
+
+        if (fabs(current_error) >= 1.0f) {
+            current_speed = baseSpeed * 0.60f;
+        }
+
+        if (current_speed < 0.05f) {
+            current_speed = 0.05f;
+        }
+
+        if (current_speed > maxSpeed) {
+            current_speed = maxSpeed;
+        }
+
+
+        // ----------------------------------------------------
+        // Apply PID motor correction
+        // ----------------------------------------------------
+
+        drive(
+            current_speed + correction,
+            current_speed - correction
+        );
+
+
+        // ----------------------------------------------------
+        // Throttled debugging
+        // Printing every 5 ms makes PID respond more slowly.
+        // ----------------------------------------------------
+
+        if (
+            duration_cast<milliseconds>(
+                debug_timer.elapsed_time()
+            ).count() >= 100
+        ) {
+
+            printf(
+                "Error: %.2f  Correction: %.2f  Speed: %.2f\n",
+                current_error,
+                correction,
+                current_speed
+            );
+
+            debug_timer.reset();
+        }
+
+        ThisThread::sleep_for(milliseconds(5));
+    }
+}

@@ -1,0 +1,52 @@
+//this code is to test the reading of the IR sensors of the omni-robot 
+#include "mbed.h"
+#include "HCSR04.h"
+
+
+AnalogIn S0(A0); //right side 
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4); //left side, right and left mix up 
+AnalogIn S5(A5); //leftMost Side 
+AnalogIn S6(A6); //rightMost Side 
+
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);
+PwmOut pwm4(D9);
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+void stopAll() {
+        pwm1.write(0.5f); //rear motor control 
+        pwm2.write(0.5f);
+        pwm3.write(0.5f); //front motor control CW
+        pwm4.write(0.5f);
+        pwm5.write(0.5f); //right motor, CW, frontwards 
+        pwm6.write(0.5f);
+        pwm7.write(0.5f); //left motor, CW, frontwards 
+        pwm8.write(0.5f); 
+}
+
+int main() {
+    stopAll(); 
+
+    while (true) {
+        float leftMost = S5.read()*100; 
+        float left = S0.read(); //right side -2
+        float leftmid = S1.read(); //-1
+        float middle = S2.read(); //0
+        float rightmid = S3.read(); //1
+        float right = S4.read(); //left side 2
+        float rightMost = S6.read();  
+
+         printf("LeftMost: %.3f | Left: %.3f | LeftMid: %.3f | Middle: %.3f | RightMid: %.3f | Right: %.3f | RightMost: %.3f\r\n",
+             leftMost, left, leftmid, middle, rightmid, right, rightMost);
+
+        ThisThread::sleep_for(1s);
+    }
+}

@@ -1,0 +1,366 @@
+#include "mbed.h"
+#include "HCSR04.h"
+
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);  
+PwmOut pwm4(D9);
+
+AnalogIn S0(A0); //left side 
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4); //right side 
+
+//Distance Sensor 
+//VCC - 3V3, GND - GND, Echo - D5, Trig - D6 
+HCSR04 sensor(D5, D6);
+
+
+//const float threshold = 0.5f;
+float baseSpeed= 0.2f;
+float fastLeft = 0.5f;
+//float slow=0.1f;
+const float stop=0.0f;
+
+//to balance motor speed
+const float LEFT_MOTOR_SCALE = 0.98f;  
+const float RIGHT_MOTOR_SCALE = 1.0f; // Example: Right motor is naturally 10% faster
+
+
+void drive(float left, float right) {
+    
+    left = left * LEFT_MOTOR_SCALE;
+    right = right * RIGHT_MOTOR_SCALE;
+
+    if (left > 1.0f) left = 1.0f;
+    if (left < 0.0f) left = 0.0f;
+    if (right > 1.0f) right = 1.0f;
+    if (right < 0.0f) right = 0.0f;
+
+    pwm1.write(left);
+    pwm4.write(right);
+}
+
+
+void maneuver(int number) {
+    if (number == 2) {
+        return;   
+    }
+    //going left 0.3s
+    drive(0.1, 0.3);
+    ThisThread::sleep_for(600ms);
+
+    //going straight 0.2s
+    drive(0.3, 0.3);
+    ThisThread::sleep_for(200ms);
+
+    //going right 0.3s 
+    drive(0.3, 0.1); 
+    ThisThread::sleep_for(600ms);
+    drive(stop, stop); 
+
+}
+
+//variables for EOT check 
+using namespace std::chrono;
+Timer t;
+int state = false; 
+bool previously_on_line = false;
+
+//PID, error, integral, derivative
+
+float Proportional;
+float Integral; 
+float Derivative; 
+float current_error = 0; 
+float setpoint = 0; 
+float position; 
+float last_error = 0; 
+
+float weighted_sum = 0.0f;
+int active_sensors = 0;
+
+float Kp = 0.09f; 
+float Ki = 0.00f; 
+float Kd = 0.12f;
+float correction = 0.0f;
+
+bool empty; 
+bool currently_on_line;
+
+int main() {
+    pwm1.period(0.01f);
+    pwm4.period(0.01f);    
+
+    while (true) {
+        float right = S0.read(); //right side -2
+        float rightmid = S1.read(); //-1
+        float middle = S2.read(); //0
+        float leftmid = S3.read(); //1
+        float left = S4.read(); //left side 2
+        
+
+        weighted_sum = 0.0f;
+        active_sensors = 0; 
+        baseSpeed= 0.3f;
+
+        currently_on_line = (right > 0.6 && left > 0.6);
+
+        //end of track EOT check 
+        if (currently_on_line && !previously_on_line) {
+            if (state == false) {
+                //first perpendiculara line passed, start timer.
+                t.reset();
+                t.start();
+                state = true;
+                printf("Right aand left positive detected!\n");
+            }
+            else {
+                //second perpendicular line passed, compare timer. 
+                t.stop();
+                long long elapsed_time_ms = duration_cast<milliseconds>(t.elapsed_time()).count();
+                printf("State is true!\n");
+                printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+
+
+                if (elapsed_time_ms > 52 && elapsed_time_ms < 10000) {
+                    printf("Second signal, stopping car.\n");
+                    printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+                    drive(stop, stop);
+                    ThisThread::sleep_for(5s);
+                    state = false; 
+                    printf("Strating loop again!\n");
+
+                }
+                else if (elapsed_time_ms > 10000) {
+                    //took too long
+                    state = false; 
+                    printf("State set to false!\n"); 
+                }
+                else {
+                    state = false; 
+
+                }
+            } 
+        }
+
+        previously_on_line = currently_on_line;
+        
+
+        //obstacle check 
+        sensor.trigger(); //read distance 
+        ThisThread::sleep_for(60ms);
+        uint32_t distance = sensor.distance_cm();
+
+        printf("Distance: %lu cm \n", distance);
+
+        if (distance <= 20 && distance > 0) {
+            printf(" -> Obstacle Detected \r\n");
+
+            //start maneuver
+            printf("Starting Maneuver\r\n");
+            maneuver(1); 
+
+            printf("Maneuver ended\r\n");
+
+            //check if still on line, if not search 
+        }
+
+
+        // empty = (right < 0.6 && rightmid < 0.6 && middle < 0.6 && leftmid < 0.6 && left < 0.6);
+        // if (empty){
+        //     drive(stop, stop);
+        // }
+        
+        if (right > 0.6)    {weighted_sum += -2.0f; active_sensors++;}
+        if (rightmid > 0.6) {weighted_sum += -1.0f; active_sensors++;}
+        if (middle > 0.6)   {weighted_sum +=  0.0f; active_sensors++;}
+        if (leftmid > 0.6)  {weighted_sum +=  1.0f; active_sensors++;} 
+        if (left > 0.6)     {weighted_sum +=  2.0f; active_sensors++;} 
+ 
+
+        if (active_sensors > 0) {
+            position = weighted_sum/active_sensors;
+        }
+        else {
+            if (fabs(last_error) <= 0.5) {
+                drive(baseSpeed, baseSpeed);
+            }
+            else {
+                drive(stop, stop);
+                continue;
+            }
+        }
+
+        if (fabs(last_error) >= 0.5) baseSpeed = baseSpeed*0.6;
+
+        current_error = setpoint - position; 
+        Proportional = current_error;
+        Integral += current_error; 
+        Derivative = current_error - last_error;
+        last_error = current_error; 
+
+        correction = Kp*Proportional + Ki*Integral + Kd*Derivative; 
+
+        drive(baseSpeed+correction, baseSpeed-correction);
+
+        //printf("S0, Right: %.5f S1, Rightmid: %.5f S2, Middle: %.5f S3, Leftmid: %.5f S4, Left: %.5f \r\n",
+        //S0.read(), S1.read(), S2.read(), S3.read(), S4.read());
+        thread_sleep_for(10);
+    }
+    thread_sleep_for(10);
+
+}
+
+
+//REAL EXAMPLE ROBOT 
+// #include "mbed.h"
+
+// PwmOut pwm1(D12);
+// PwmOut pwm2(D11);
+// PwmOut pwm3(PA_11_ALT0);  
+// PwmOut pwm4(D9);
+
+// AnalogIn S0(A0); //left side 
+// AnalogIn S1(A1);
+// AnalogIn S2(A2);
+// AnalogIn S3(A3);
+// AnalogIn S4(A4); //right side 
+
+// //const float threshold = 0.5f;
+// const float fast= 0.5f;
+// const float slow=0.1f;
+// const float stop=0.0f;
+
+// void drive(float left, float right) {
+//     pwm1.write(left);
+//     pwm4.write(right);
+// }
+
+
+// //variables for EOT check 
+// using namespace std::chrono;
+// Timer t;
+// int state = false; 
+// bool previously_on_line = false;
+
+
+
+// int main() {
+//     pwm1.period(0.01f);
+//     pwm4.period(0.01f);    
+
+//     while (true) {
+//         float right = S0.read(); //right side -2
+//         float rightmid = S1.read(); //-1
+//         float middle = S2.read(); //0
+//         float leftmid = S3.read(); //1
+//         float left = S4.read(); //left side 2
+        
+
+//         bool currently_on_line = (right > 0.6 && left > 0.6);
+
+//         //end of track EOT check 
+
+//         if (currently_on_line && !previously_on_line) {
+//             if (state == false) {
+//                 //first perpendiculara line passed, start timer.
+//                 t.reset();
+//                 t.start();
+//                 state = true;
+//                 printf("Right aand left positive detected!\n");
+//             }
+//             else {
+//                 //second perpendicular line passed, compare timer. 
+//                 t.stop();
+//                 long long elapsed_time_ms = duration_cast<milliseconds>(t.elapsed_time()).count();
+//                 printf("State is true!\n");
+//                 printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+
+
+//                 if (elapsed_time_ms > 52 && elapsed_time_ms < 10000) {
+//                     printf("Second signal, stopping car.\n");
+//                     printf("The time taken was %llu milliseconds\n", elapsed_time_ms);
+//                     drive(stop, stop);
+//                     ThisThread::sleep_for(5s);
+//                     state = false; 
+//                     printf("Strating loop again!\n");
+
+//                 }
+//                 else if (elapsed_time_ms > 10000) {
+//                     //took too long
+//                     state = false; 
+//                     printf("State set to false!\n"); 
+//                 }
+//                 else {
+//                     state = false; 
+
+//                 }
+//             } 
+//         }
+
+//         previously_on_line = currently_on_line;
+        
+        
+//         if (middle > 0.6) {
+//                 drive(fast, fast);
+//                 //printf("Fast, Fast\n");
+//             }
+//         else if (leftmid > 0.6) {
+//             drive(slow, fast);
+//             //printf("Slow, Fast\n");
+//         }
+//         else if (rightmid > 0.6) {
+//             drive(fast, slow);
+//             //printf("Fast, Slow\n");
+//         }
+//         else if (left > 0.6) {
+//             drive(stop, fast);
+//             //printf("Stop, Fast\n");
+//         }
+//         else if (right > 0.6) {
+//             drive(fast, stop);
+//             //printf("Fast, Stop\n");
+//         }
+//         else {
+//             drive(stop, stop);
+//             //printf("Stop, Stop\n");
+//         }
+
+//         //printf("S0, Right: %.5f S1, Rightmid: %.5f S2, Middle: %.5f S3, Leftmid: %.5f S4, Left: %.5f \r\n",
+//         //S0.read(), S1.read(), S2.read(), S3.read(), S4.read());
+//         thread_sleep_for(10);
+//     }
+//     thread_sleep_for(10);
+
+// }
+
+
+//DISTANCE SENSOR CODE standalone
+//VCC - 3V3, GND - GND, Echo - D5, Trig - D6 
+// #include "mbed.h"
+// #include "HCSR04.h"
+
+// int main()
+// {
+//    HCSR04 sensor(D5, D6);
+//    while (true) {
+//        sensor.trigger();
+
+//        ThisThread::sleep_for(60ms);
+
+//        uint32_t distance = sensor.distance_cm();
+
+//        printf("Distance: %lu cm", distance);
+
+//        if (distance >= 15 && distance <= 20) {
+//            printf(" -> [WARNING! Obstacle Detected]\r\n");
+
+//        } else {
+//            printf("\r\n");
+//        }
+
+//        ThisThread::sleep_for(500ms);
+//    }
+// }

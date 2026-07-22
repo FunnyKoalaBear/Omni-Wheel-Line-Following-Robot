@@ -1,0 +1,181 @@
+#include "mbed.h"
+#include "HCSR04.h"
+#include <cmath>
+#include <algorithm>
+
+PwmOut pwm1(D12);
+PwmOut pwm2(D11);
+PwmOut pwm3(PA_11_ALT0);
+PwmOut pwm4(D9);
+
+PwmOut pwm5(D0);
+PwmOut pwm6(D1);
+PwmOut pwm7(PA_12_ALT0);
+PwmOut pwm8(PB_0_ALT0);
+
+
+AnalogIn S0(A0); //left side 
+AnalogIn S1(A1);
+AnalogIn S2(A2);
+AnalogIn S3(A3);
+AnalogIn S4(A4); //right side 
+
+//Distance Sensor 
+//VCC - 3V3, GND - GND, Echo - D5, Trig - D6 
+HCSR04 sensor(D5, D6);
+
+
+//const float threshold = 0.5f;
+float baseSpeed= 0.5;
+float fastLeft = 0.8f;
+//float slow=0.1f;
+const float stop=0.0f;
+
+//to balance motor speed
+const float LEFT_MOTOR_SCALE = 0.89f;
+const float RIGHT_MOTOR_SCALE = 1.0f;
+const float FRONT_MOTOR_SCALE = 1.0f;
+const float BACK_MOTOR_SCALE = 0.975f;
+
+
+void stopAll() {
+    // pwm1.write(0.5f); //rear motor control 
+    // pwm2.write(0.5f);
+    // pwm3.write(0.5f); //front motor control CW
+    // pwm4.write(0.5f);
+    // pwm5.write(0.5f); //right motor, CW, frontwards 
+    // pwm6.write(0.5f);
+    // pwm7.write(0.5f); //left motor, CW, frontwards 
+    // pwm8.write(0.5f); 
+
+    pwm1.write(0.0f); //rer motor control
+    pwm2.write(0.0f);
+    pwm3.write(0.0f); //front motor control CW
+    pwm4.write(0.0f);
+    pwm5.write(0.0f); //right motor, CW, frontwrds 
+    pwm6.write(0.0f);
+    pwm7.write(0.0f); //left motor, CW, frontwards 
+    pwm8.write(0.0f);
+}
+
+void drive(float vy, float strafe, float turn) {
+
+    //print values recieved 
+    //printf("vy: %f, strafe: %f, tunr: %f\n", vy, strafe, turn);
+
+    // calculate motor spin 
+    float left_raw = vy + turn;
+    float right_raw = vy - turn;
+    float front_raw = strafe + turn;
+    float back_raw = strafe - turn;    
+ 
+
+    //apply motor scaling 
+    left_raw *= LEFT_MOTOR_SCALE;
+    right_raw *= RIGHT_MOTOR_SCALE;
+    front_raw *= FRONT_MOTOR_SCALE;
+    back_raw *= BACK_MOTOR_SCALE;
+    
+    //apply movement filters (clamp to [-1, 1])
+    float max_speed = max({fabs(left_raw), fabs(right_raw), fabs(front_raw), fabs(back_raw)});
+    
+    if (max_speed > 1.0f) {
+        left_raw /= max_speed; right_raw /= max_speed; front_raw /= max_speed; back_raw /= max_speed;
+    }
+    
+    // spin commands 
+    // front motors
+    //printf("Front motor: %f\n", front_raw);
+    if (front_raw >= 0) {pwm3.write(front_raw); pwm4.write(0.0f);}
+    else {pwm3.write(0.0f); pwm4.write(fabs(front_raw));}
+    
+    //rear motors
+    //printf("Rear motor: %f\n", back_raw);
+    if (back_raw >= 0) {pwm1.write(back_raw); pwm2.write(0.0f);}
+    else {pwm1.write(0.0f); pwm2.write(fabs(back_raw));}
+
+    //right motors
+    //printf("Right motor: %f\n", right_raw); 
+    if (right_raw >= 0) {pwm5.write(right_raw); pwm6.write(0.0f);}
+    else {pwm5.write(0.0f); pwm6.write(fabs(right_raw));}
+
+    //let motors 
+    //printf("Left motor: %f\n", left_raw);
+    if (left_raw >= 0) {pwm7.write(left_raw); pwm8.write(0.0f);}
+    else {pwm7.write(0.0f); pwm8.write(fabs(left_raw));}
+
+}
+
+void maneuver(int number) {
+    if (number == 2) {
+        return;   
+    }
+    //going left 0.3s
+    // drive(0.1, 0.3);
+    // ThisThread::sleep_for(600ms);
+
+    // //going straight 0.2s
+    // drive(0.3, 0.3);
+    // ThisThread::sleep_for(200ms);
+
+    // //going right 0.3s 
+    // drive(0.3, 0.1); 
+    // ThisThread::sleep_for(600ms);
+    // drive(stop, stop); 
+
+}
+
+//variables for EOT check 
+using namespace std::chrono;
+Timer t;
+int state = false; 
+bool previously_on_line = false;
+
+//PID, error, integral, derivative
+
+
+int main() {
+    pwm1.period(0.0002f);
+    pwm2.period(0.0002f);
+    pwm3.period(0.0002f);
+    pwm4.period(0.0002f);
+    pwm5.period(0.0002f);
+    pwm6.period(0.0002f);
+    pwm7.period(0.0002f);
+    pwm8.period(0.0002f);
+
+    // pwm1.period(0.02f);
+    // pwm2.period(0.02f);
+    // pwm3.period(0.02f);
+    // pwm4.period(0.02f);
+    // pwm5.period(0.02f);
+    // pwm6.period(0.02f);
+    // pwm7.period(0.02f);
+    // pwm8.period(0.02f);
+ 
+    while (true) {
+
+        for (float speed = 0.1f; speed < 1.0f; speed += 0.1f) {
+            drive(speed, 0.0f, 0.0f); 
+            //drive(baseSpeed, 0.0f, correction); 
+            printf("Base speed: %f, correction: %f \n", speed, 0.0f);
+
+            thread_sleep_for(1000); //CHANGE THIS BACK TO 10
+        }
+
+        stopAll();
+        thread_sleep_for(3000);
+        printf("Sleeping\n");
+
+        for (float speed = 0.1f; speed < 1.0f; speed += 0.1f) {
+            drive(0.0f, speed, 0.0f); 
+            //drive(baseSpeed, 0.0f, correction); 
+            printf("Base speed: %f, correction: %f \n", speed, 0.0f);
+
+            thread_sleep_for(1000); //CHANGE THIS BACK TO 10
+        }
+
+    }
+    thread_sleep_for(10); 
+    printf("\n");
+}
